@@ -10,6 +10,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
 from pathlib import Path
+import json
+from typing import Optional
+
+# Session storage for authenticated users (in-memory)
+active_sessions = {}
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
@@ -111,8 +116,12 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, admin_token: Optional[str] = None):
+    """Unregister a student from an activity - can only be done by admin"""
+    # Validate admin token if provided
+    if admin_token and admin_token not in active_sessions:
+        raise HTTPException(status_code=401, detail="Invalid or expired admin session")
+    
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -130,3 +139,51 @@ def unregister_from_activity(activity_name: str, email: str):
     # Remove student
     activity["participants"].remove(email)
     return {"message": f"Unregistered {email} from {activity_name}"}
+
+
+# Load teachers from JSON file
+def load_teachers():
+    """Load teacher credentials from teachers.json"""
+    teachers_file = Path(__file__).parent / "teachers.json"
+    if teachers_file.exists():
+        with open(teachers_file, 'r') as f:
+            data = json.load(f)
+            return data.get("teachers", {})
+    return {}
+
+
+teachers = load_teachers()
+
+
+@app.post("/admin/login")
+def admin_login(username: str, password: str):
+    """Authenticate a teacher and create an admin session"""
+    if username not in teachers or teachers[username] != password:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    # Generate a simple session token
+    import secrets
+    token = secrets.token_urlsafe(32)
+    active_sessions[token] = {
+        "username": username,
+        "logged_in": True
+    }
+    
+    return {"token": token, "message": f"Logged in as {username}"}
+
+
+@app.post("/admin/logout")
+def admin_logout(admin_token: str):
+    """Logout an admin user"""
+    if admin_token in active_sessions:
+        del active_sessions[admin_token]
+        return {"message": "Logged out successfully"}
+    raise HTTPException(status_code=401, detail="Invalid session")
+
+
+@app.get("/admin/verify")
+def verify_admin(admin_token: Optional[str] = None):
+    """Verify if an admin session is valid"""
+    if admin_token and admin_token in active_sessions:
+        return {"authenticated": True, "username": active_sessions[admin_token]["username"]}
+    return {"authenticated": False}
